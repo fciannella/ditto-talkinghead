@@ -140,6 +140,10 @@ async def get_demo_page():
     </head>
     <body>
         <h1>Ditto TalkingHead Real-time Streaming</h1>
+        <div id="status" style="margin-bottom: 10px; padding: 10px; background-color: #f0f0f0; border-radius: 5px;">
+            <strong>Status:</strong> <span id="connectionStatus">Disconnected</span><br>
+            <strong>WebSocket URL:</strong> <span id="wsUrl">Not set</span>
+        </div>
         <div>
             <video id="output" width="512" height="512" autoplay muted></video>
         </div>
@@ -147,6 +151,7 @@ async def get_demo_page():
             <button id="startBtn">Start Streaming</button>
             <button id="stopBtn">Stop Streaming</button>
         </div>
+        <div id="errorMsg" style="color: red; margin-top: 10px;"></div>
         
         <script>
             let ws = null;
@@ -156,34 +161,73 @@ async def get_demo_page():
             const video = document.getElementById('output');
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
+            const statusEl = document.getElementById('connectionStatus');
+            const wsUrlEl = document.getElementById('wsUrl');
+            const errorEl = document.getElementById('errorMsg');
             
             document.getElementById('startBtn').onclick = startStreaming;
             document.getElementById('stopBtn').onclick = stopStreaming;
             
+            function updateStatus(status, error = '') {
+                statusEl.textContent = status;
+                errorEl.textContent = error;
+                if (error) {
+                    errorEl.style.display = 'block';
+                } else {
+                    errorEl.style.display = 'none';
+                }
+            }
+            
             async function startStreaming() {
                 if (isStreaming) return;
                 
-                // Get microphone access
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                
-                // Setup WebSocket
-                ws = new WebSocket('ws://localhost:8000/ws');
-                
-                ws.onopen = () => {
-                    console.log('WebSocket connected');
-                    // Send start command with source image
-                    ws.send(JSON.stringify({
-                        type: 'start',
-                        source_path: '/app/data/source_image.png'  // Configure this
-                    }));
-                };
-                
-                ws.onmessage = (event) => {
-                    const data = JSON.parse(event.data);
-                    if (data.type === 'frame') {
-                        displayFrame(data.data);
-                    }
-                };
+                try {
+                    updateStatus('Requesting microphone access...');
+                    
+                    // Get microphone access
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    
+                    // Setup WebSocket - dynamically use current host
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const host = window.location.host;
+                    const wsUrl = `${protocol}//${host}/ws`;
+                    
+                    wsUrlEl.textContent = wsUrl;
+                    updateStatus('Connecting to server...');
+                    
+                    ws = new WebSocket(wsUrl);
+                    
+                    ws.onopen = () => {
+                        console.log('WebSocket connected');
+                        updateStatus('Connected - Initializing stream...');
+                        // Send start command with source image
+                        ws.send(JSON.stringify({
+                            type: 'start',
+                            source_path: '/app/data/source_image.png'  // Configure this
+                        }));
+                        updateStatus('Streaming active');
+                    };
+                    
+                    ws.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        updateStatus('Connection failed', 'Failed to connect to streaming server. Check if the service is running on the server.');
+                    };
+                    
+                    ws.onclose = (event) => {
+                        console.log('WebSocket closed:', event);
+                        if (isStreaming) {
+                            updateStatus('Disconnected', 'Connection to server lost.');
+                        } else {
+                            updateStatus('Disconnected');
+                        }
+                    };
+                    
+                    ws.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'frame') {
+                            displayFrame(data.data);
+                        }
+                    };
                 
                 // Setup audio recording
                 mediaRecorder = new MediaRecorder(stream, {
@@ -201,6 +245,14 @@ async def get_demo_page():
                 
                 mediaRecorder.start(200); // 200ms chunks
                 isStreaming = true;
+                
+                } catch (error) {
+                    console.error('Error starting stream:', error);
+                    updateStatus('Error', `Failed to start streaming: ${error.message}`);
+                    if (ws) {
+                        ws.close();
+                    }
+                }
             }
             
             function displayFrame(base64Data) {
@@ -222,6 +274,8 @@ async def get_demo_page():
             function stopStreaming() {
                 if (!isStreaming) return;
                 
+                updateStatus('Stopping...');
+                
                 if (mediaRecorder) {
                     mediaRecorder.stop();
                 }
@@ -229,6 +283,7 @@ async def get_demo_page():
                     ws.close();
                 }
                 isStreaming = false;
+                updateStatus('Disconnected');
             }
         </script>
     </body>
